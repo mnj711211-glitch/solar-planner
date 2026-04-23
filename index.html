@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能太陽能排版佈署系統</title>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  #topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#1e293b;border-bottom:1px solid #334155;flex-shrink:0}
+  #topbar h1{font-size:15px;font-weight:700;color:#38bdf8;white-space:nowrap}
+  #search-box{flex:1;max-width:360px;padding:6px 10px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:13px}
+  #search-box::placeholder{color:#64748b}
+  #btn-search{padding:6px 14px;background:#0284c7;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;white-space:nowrap}
+  #btn-search:hover{background:#0369a1}
+  #api-key-area{display:none}
+
+  #main{display:flex;flex:1;overflow:hidden}
+
+  #sidebar{width:288px;background:#1e293b;border-right:1px solid #334155;display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+  .section{padding:14px;border-bottom:1px solid #334155}
+  .section h3{font-size:12px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+  label{display:block;font-size:12px;color:#cbd5e1;margin-bottom:4px;margin-top:8px}
+  select,input[type=number],input[type=range]{width:100%;padding:6px 8px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:13px}
+  input[type=range]{padding:4px 0;cursor:pointer}
+  select:focus,input:focus{outline:none;border-color:#38bdf8}
+
+  #tool-btns{display:flex;flex-direction:column;gap:6px}
+  .tool-btn{padding:8px 12px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:500;transition:.15s;text-align:left}
+  .tool-btn.primary{background:#0284c7;color:#fff}
+  .tool-btn.primary:hover{background:#0369a1}
+  .tool-btn.danger{background:#dc2626;color:#fff}
+  .tool-btn.danger:hover{background:#b91c1c}
+  .tool-btn.success{background:#059669;color:#fff}
+  .tool-btn.success:hover{background:#047857}
+  .tool-btn.secondary{background:#334155;color:#e2e8f0}
+  .tool-btn.secondary:hover{background:#475569}
+  .tool-btn.warn{background:#d97706;color:#fff}
+  .tool-btn.warn:hover{background:#b45309}
+  .tool-btn:disabled{opacity:.4;cursor:not-allowed}
+
+  .rot-row{display:flex;align-items:center;gap:8px}
+  .rot-row input[type=range]{flex:1}
+  .rot-val{min-width:42px;text-align:right;font-size:13px;font-weight:600;color:#38bdf8}
+  #btn-autodetect{padding:5px 10px;background:#7c3aed;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:12px;white-space:nowrap}
+  #btn-autodetect:hover{background:#6d28d9}
+  #btn-autodetect:disabled{opacity:.4;cursor:not-allowed}
+  .rot-hint{font-size:11px;color:#64748b;margin-top:4px;line-height:1.5}
+
+  #results{padding:14px}
+  #results h3{font-size:12px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+  .stat{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1e293b}
+  .stat:last-child{border-bottom:none}
+  .stat-label{font-size:12px;color:#94a3b8}
+  .stat-value{font-size:14px;font-weight:600;color:#38bdf8}
+  .stat-value.green{color:#34d399}
+  .stat-value.yellow{color:#fbbf24}
+  #no-results{font-size:12px;color:#64748b;text-align:center;padding:12px 0}
+
+  #map-container{flex:1;position:relative}
+  #map{width:100%;height:100%}
+  #map-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0f172a;flex-direction:column;gap:12px;z-index:10}
+  #map-overlay p{color:#94a3b8;font-size:14px;text-align:center;max-width:340px;line-height:1.6}
+  #map-overlay .icon{font-size:48px}
+
+  #statusbar{padding:6px 16px;background:#1e293b;border-top:1px solid #334155;font-size:12px;color:#64748b;flex-shrink:0}
+
+  #legend{position:absolute;bottom:28px;right:12px;background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 14px;z-index:5;font-size:11px}
+  #legend h4{color:#94a3b8;margin-bottom:6px;font-size:11px;font-weight:600}
+  .legend-item{display:flex;align-items:center;gap:6px;margin-bottom:4px;color:#cbd5e1}
+  .legend-color{width:14px;height:10px;border-radius:2px;border:1px solid rgba(255,255,255,.2)}
+
+  #rot-indicator{position:absolute;top:12px;left:12px;background:rgba(15,23,42,.85);border:1px solid #334155;border-radius:8px;padding:8px 12px;z-index:5;font-size:12px;color:#94a3b8;display:none;pointer-events:none}
+  #rot-indicator span{color:#a78bfa;font-weight:700}
+
+  /* ── Dimension label (injected into map) ── */
+  .dim-label{
+    position:absolute; pointer-events:none;
+    padding:2px 7px; border-radius:4px;
+    font-size:11px; font-weight:700; white-space:nowrap;
+    line-height:1.5; border:1px solid rgba(255,255,255,.18);
+  }
+  .dim-label.edge  { background:rgba(15,23,42,.9); color:#fbbf24; }
+  .dim-label.module{ background:rgba(59,130,246,.85); color:#fff; }
+  .dim-label.buffer{ background:rgba(239,68,68,.85); color:#fff; }
+  .dim-label.pathway{ background:rgba(255,255,255,.12); color:#fff; border-color:rgba(255,255,255,.4); }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>☀ 智能太陽能排版佈署系統</h1>
+  <input id="search-box" type="text" placeholder="輸入地址或經緯度 (e.g. 台北101)"/>
+  <button id="btn-search" onclick="searchLocation()">搜尋</button>
+  <div id="api-key-area"></div>
+</div>
+
+<div id="main">
+  <div id="sidebar">
+
+    <div class="section">
+      <h3>繪圖工具</h3>
+      <div id="tool-btns">
+        <button class="tool-btn primary"  id="btn-draw"  onclick="startDrawing()" disabled>✏ 繪製安裝範圍</button>
+        <button class="tool-btn warn"     id="btn-auto"  onclick="autoDetectRotation()" disabled>🔍 自動偵測屋頂角度</button>
+        <button class="tool-btn success"  id="btn-run"   onclick="runLayout()" disabled>⚡ 執行自動排版</button>
+        <button class="tool-btn danger"   id="btn-clear" onclick="clearAll()" disabled>✕ 清除全部</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>排版旋轉角度</h3>
+      <label>網格旋轉角度（相對正北，順時針）</label>
+      <div class="rot-row">
+        <input type="range" id="rotation-slider" min="0" max="179" value="0" step="1" oninput="onRotationChange(this.value)">
+        <span class="rot-val"><span id="rot-deg">0</span>°</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <input type="number" id="rotation-input" value="0" min="0" max="179" step="1" style="flex:1" oninput="onRotationChange(this.value)">
+        <button id="btn-autodetect" onclick="autoDetectRotation()" disabled>⟳ 自動偵測</button>
+      </div>
+      <div class="rot-hint">0° = 與正北平行｜90° = 與正東平行<br>先繪製多邊形，再點自動偵測填入建議角度。</div>
+    </div>
+
+    <div class="section">
+      <h3>空間限制設定</h3>
+      <label>安全護欄寬度 (m)　<span style="color:#64748b;font-weight:400">邊框內縮量</span></label>
+      <input type="number" id="safety-buffer" value="0.1" min="0" max="1" step="0.01">
+      <label>護欄到模組淨距 (m)　<span style="color:#64748b;font-weight:400">人員通行空間</span></label>
+      <input type="number" id="safety-clearance" value="1.5" min="0" max="5" step="0.1">
+      <label>維運走道寬度 (m)</label>
+      <input type="number" id="pathway-width" value="0.3" min="0" max="2" step="0.1">
+      <label>每隔幾排設置走道</label>
+      <input type="number" id="pathway-every" value="5" min="1" max="50" step="1">
+      <label>走道方向</label>
+      <select id="pathway-dir">
+        <option value="horizontal">橫向走道（水平分隔）</option>
+        <option value="vertical">縱向走道（垂直分隔）</option>
+        <option value="both">橫縱雙向</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <h3>模組選型</h3>
+      <label>模組型號</label>
+      <select id="module-select" onchange="updateModuleInfo()">
+        <option value="0">TOYO 495W（2094×1038mm）</option>
+        <option value="1">JinkoSolar N-Type 545W（2278×1134mm）</option>
+        <option value="2">Canadian Solar HiHero 545W（2172×1303mm）</option>
+        <option value="3">LONGi Hi-MO6 580W（2256×1133mm）</option>
+        <option value="4">晶澳 DeepBlue 3.0 545W（2094×1134mm）</option>
+        <option value="custom">自訂模組</option>
+      </select>
+      <div id="custom-module" style="display:none">
+        <label>自訂長度 (mm)</label>
+        <input type="number" id="custom-length" value="2000" min="500" max="4000">
+        <label>自訂寬度 (mm)</label>
+        <input type="number" id="custom-width" value="1000" min="300" max="2000">
+        <label>額定功率 (W)</label>
+        <input type="number" id="custom-power" value="500" min="100" max="1000" step="5">
+      </div>
+      <label>模組擺放方向</label>
+      <select id="orientation" onchange="updateModuleInfo()">
+        <option value="portrait">縱向（Portrait）</option>
+        <option value="landscape">橫向（Landscape）</option>
+      </select>
+      <div id="module-info" style="margin-top:8px;padding:8px;background:#0f172a;border-radius:6px;font-size:11px;color:#94a3b8;line-height:1.8"></div>
+    </div>
+
+    <div id="results">
+      <h3>排版結果</h3>
+      <div id="no-results">尚未執行排版，請先繪製安裝範圍。</div>
+      <div id="stats" style="display:none">
+        <div class="stat"><span class="stat-label">多邊形面積</span><span class="stat-value" id="r-total-area">—</span></div>
+        <div class="stat"><span class="stat-label">可安裝淨面積</span><span class="stat-value" id="r-net-area">—</span></div>
+        <div class="stat"><span class="stat-label">排版旋轉角</span><span class="stat-value" id="r-angle">—</span></div>
+        <div class="stat"><span class="stat-label">安裝片數</span><span class="stat-value green" id="r-count">—</span></div>
+        <div class="stat"><span class="stat-label">預估總容量</span><span class="stat-value green" id="r-capacity">—</span></div>
+        <div class="stat"><span class="stat-label">面積使用率</span><span class="stat-value yellow" id="r-util">—</span></div>
+        <div class="stat"><span class="stat-label">空置面積</span><span class="stat-value" id="r-unused">—</span></div>
+      </div>
+    </div>
+
+  </div><!-- /sidebar -->
+
+  <div id="map-container">
+    <div id="map"></div>
+    <div id="map-overlay">
+      <div class="icon">🗺</div>
+      <p>請在右上角輸入 Google Maps API Key 並點擊「載入地圖」以開始使用。<br>需啟用 <b>Maps JavaScript API</b> 及 <b>Drawing Library</b>。</p>
+    </div>
+    <div id="rot-indicator">排版旋轉角：<span id="rot-ind-val">0°</span></div>
+    <div id="legend" style="display:none">
+      <h4>圖例</h4>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(251,191,36,.25);border-color:#fbbf24"></div>繪製範圍</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(239,68,68,.15);border-color:#ef4444"></div>安全護欄區</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(59,130,246,.8)"></div>太陽能模組</div>
+      <div class="legend-item"><div class="legend-color" style="background:transparent;border-color:#f97316;border-width:2px"></div>安全護欄線（10cm）</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(239,68,68,.1);border-color:#ef4444"></div>護欄淨距區（1.5m）</div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<div id="statusbar"><span id="status-text">請輸入 Google Maps API Key 並載入地圖</span></div>
+
+<script>
+// ═══════════════════════════════════════════
+// MODULE DATABASE
+// ═══════════════════════════════════════════
+const MODULE_DB = [
+  { name:'TOYO 495W',          length:2.094, width:1.038, power:495 },
+  { name:'JinkoSolar 545W',    length:2.278, width:1.134, power:545 },
+  { name:'Canadian Solar 545W',length:2.172, width:1.303, power:545 },
+  { name:'LONGi 580W',         length:2.256, width:1.133, power:580 },
+  { name:'晶澳 545W',          length:2.094, width:1.134, power:545 },
+];
+
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+let map = null, drawingManager = null;
+let currentPolygon  = null;
+let bufferPolygon   = null;
+let axisOverlay     = null;
+let moduleOverlays  = [];   // blue module rectangles
+let pathwayOverlays = [];   // diamond mesh polygons
+let labelOverlays   = [];   // module + buffer + pathway labels
+let edgeLabels      = [];   // polygon edge length labels
+let LabelOverlay;           // class — defined after Google Maps loads
+
+function setStatus(t){ document.getElementById('status-text').textContent = t; }
+
+// ═══════════════════════════════════════════
+// COORDINATE HELPERS
+// ═══════════════════════════════════════════
+function toMetric(lat, lng, rLat, rLng){
+  return [
+    (lng - rLng) * 111320 * Math.cos(rLat * Math.PI / 180),
+    (lat - rLat) * 111320,
+  ];
+}
+function fromMetric(x, y, rLat, rLng){
+  return {
+    lat: rLat + y / 111320,
+    lng: rLng + x / (111320 * Math.cos(rLat * Math.PI / 180)),
+  };
+}
+function rotate2D(x, y, deg){
+  const r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+  return [x*c - y*s, x*s + y*c];
+}
+function midLatLng(a, b){ return { lat:(a.lat+b.lat)/2, lng:(a.lng+b.lng)/2 }; }
+function pointInPoly2D(px, py, poly){
+  let inside = false;
+  for(let i=0, j=poly.length-1; i<poly.length; j=i++){
+    const [xi,yi]=[poly[i][0],poly[i][1]], [xj,yj]=[poly[j][0],poly[j][1]];
+    if(((yi>py)!==(yj>py)) && (px < (xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+
+// ═══════════════════════════════════════════
+// LABEL OVERLAY (defined once Google Maps loads)
+// ═══════════════════════════════════════════
+function defineLabelOverlay(){
+  LabelOverlay = class extends google.maps.OverlayView {
+    constructor(latLng, text, cls='edge', offPx={x:0,y:0}){
+      super();
+      this._pos = latLng; this._text = text;
+      this._cls = cls; this._off = offPx; this._el = null;
+    }
+    onAdd(){
+      this._el = document.createElement('div');
+      this._el.className = 'dim-label ' + this._cls;
+      this._el.textContent = this._text;
+      this.getPanes().floatPane.appendChild(this._el);
+    }
+    draw(){
+      const pt = this.getProjection().fromLatLngToDivPixel(this._pos);
+      if(!pt||!this._el) return;
+      const w=this._el.offsetWidth, h=this._el.offsetHeight;
+      this._el.style.left = (pt.x - w/2 + this._off.x) + 'px';
+      this._el.style.top  = (pt.y - h/2 + this._off.y) + 'px';
+    }
+    onRemove(){
+      this._el?.parentNode?.removeChild(this._el); this._el=null;
+    }
+    setMap(m){ super.setMap(m); if(!m && this._el) this._el.parentNode?.removeChild(this._el); }
+  };
+}
+
+// ═══════════════════════════════════════════
+// ROTATION UI
+// ═══════════════════════════════════════════
+function onRotationChange(val){
+  val = Math.max(0, Math.min(179, parseInt(val)||0));
+  document.getElementById('rotation-slider').value = val;
+  document.getElementById('rotation-input').value  = val;
+  document.getElementById('rot-deg').textContent   = val;
+  document.getElementById('rot-ind-val').textContent = val+'°';
+  if(currentPolygon) drawAxisPreview(val);
+}
+
+function drawAxisPreview(deg){
+  axisOverlay?.setMap(null); axisOverlay=null;
+  if(!currentPolygon||!map) return;
+  const path = currentPolygon.getPath().getArray();
+  const c = path.reduce((a,p)=>({lat:a.lat+p.lat()/path.length,lng:a.lng+p.lng()/path.length}),{lat:0,lng:0});
+  const len=20, rad=deg*Math.PI/180;
+  const dLat=(len*Math.cos(rad))/111320;
+  const dLng=(len*Math.sin(rad))/(111320*Math.cos(c.lat*Math.PI/180));
+  axisOverlay = new google.maps.Polyline({
+    path:[{lat:c.lat-dLat,lng:c.lng-dLng},{lat:c.lat+dLat,lng:c.lng+dLng}],
+    strokeColor:'#a78bfa', strokeWeight:2, strokeOpacity:.8, zIndex:10,
+    icons:[{icon:{path:google.maps.SymbolPath.FORWARD_OPEN_ARROW,scale:3,strokeColor:'#a78bfa'},offset:'100%'}],
+  });
+  axisOverlay.setMap(map);
+}
+
+function autoDetectRotation(){
+  if(!currentPolygon){ alert('請先繪製多邊形'); return; }
+  const path = currentPolygon.getPath().getArray(), n=path.length;
+  let best=0, maxLen=-1;
+  for(let i=0;i<n;i++){
+    const p1=path[i], p2=path[(i+1)%n];
+    const rLat=(p1.lat()+p2.lat())/2;
+    const dx=(p2.lng()-p1.lng())*111320*Math.cos(rLat*Math.PI/180);
+    const dy=(p2.lat()-p1.lat())*111320;
+    const len=Math.sqrt(dx*dx+dy*dy);
+    if(len>maxLen){ maxLen=len; let a=Math.atan2(dx,dy)*180/Math.PI; if(a<0)a+=180; if(a>=180)a-=180; best=Math.round(a); }
+  }
+  onRotationChange(best);
+  setStatus(`自動偵測屋頂角度：${best}°（依最長邊方向）。`);
+}
+
+// ═══════════════════════════════════════════
+// EDGE LABELS
+// ═══════════════════════════════════════════
+function drawEdgeLabels(polygon){
+  edgeLabels.forEach(l=>l.setMap(null)); edgeLabels=[];
+  if(!LabelOverlay) return;
+  const path = polygon.getPath().getArray(), n=path.length;
+  const centroid = path.reduce((a,p)=>({lat:a.lat+p.lat()/n,lng:a.lng+p.lng()/n}),{lat:0,lng:0});
+  for(let i=0;i<n;i++){
+    const p1=path[i], p2=path[(i+1)%n];
+    const dist = google.maps.geometry.spherical.computeDistanceBetween(p1,p2);
+    if(dist<0.3) continue;
+    const mid = { lat:(p1.lat()+p2.lat())/2, lng:(p1.lng()+p2.lng())/2 };
+    // outward direction from centroid (in screen pixel terms: y is flipped)
+    const dx=mid.lng-centroid.lng, dy=mid.lat-centroid.lat;
+    const dlen=Math.sqrt(dx*dx+dy*dy)||1;
+    const nx=dx/dlen, ny=dy/dlen;
+    const offPx = { x: nx*22, y: -ny*22 }; // screen y flipped vs geo y
+    const lbl = new LabelOverlay(new google.maps.LatLng(mid.lat,mid.lng), `${dist.toFixed(1)} m`, 'edge', offPx);
+    lbl.setMap(map);
+    edgeLabels.push(lbl);
+  }
+}
+
+// ═══════════════════════════════════════════
+// GOOGLE MAPS LOADER
+// ═══════════════════════════════════════════
+const MAPS_API_KEY = 'AIzaSyCWrwd7ZzdVOUV70-9VkjG-a2yE7SCVoYw';
+
+function loadGoogleMaps(){
+  const key = MAPS_API_KEY;
+  document.getElementById('gmap-script')?.remove();
+  const s=document.createElement('script');
+  s.id='gmap-script';
+  s.src=`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=drawing,geometry,places&callback=initMap`;
+  s.async=true;
+  s.onerror=()=>{ alert('API Key 無效或載入失敗'); setStatus('地圖載入失敗'); };
+  document.head.appendChild(s);
+  setStatus('正在載入 Google Maps…');
+}
+
+window.initMap = function(){
+  document.getElementById('map-overlay').style.display   = 'none';
+  document.getElementById('legend').style.display        = 'block';
+  document.getElementById('rot-indicator').style.display = 'block';
+
+  defineLabelOverlay();
+
+  map = new google.maps.Map(document.getElementById('map'),{
+    center:{lat:25.0330,lng:121.5654}, zoom:19, mapTypeId:'satellite', tilt:0,
+  });
+  drawingManager = new google.maps.drawing.DrawingManager({
+    drawingMode:null, drawingControl:false,
+    polygonOptions:{ fillColor:'#fbbf24',fillOpacity:.2,strokeColor:'#fbbf24',strokeWeight:2,editable:true,zIndex:1 },
+  });
+  drawingManager.setMap(map);
+  google.maps.event.addListener(drawingManager,'polygoncomplete',onPolygonComplete);
+  ['btn-draw','btn-clear'].forEach(id=>document.getElementById(id).disabled=false);
+  setStatus('地圖載入完成。點擊「繪製安裝範圍」開始框選屋頂。');
+  updateModuleInfo();
+};
+
+// ═══════════════════════════════════════════
+// SEARCH
+// ═══════════════════════════════════════════
+function searchLocation(){
+  const q=document.getElementById('search-box').value.trim();
+  if(!q||!map){ alert('請先載入地圖'); return; }
+  const m=q.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+  if(m){ map.setCenter({lat:+m[1],lng:+m[2]}); map.setZoom(19); return; }
+  new google.maps.Geocoder().geocode({address:q},(res,st)=>{
+    if(st==='OK'){ map.setCenter(res[0].geometry.location); map.setZoom(19); setStatus(`已定位：${res[0].formatted_address}`); }
+    else alert('找不到地址');
+  });
+}
+document.getElementById('search-box').addEventListener('keydown',e=>{ if(e.key==='Enter') searchLocation(); });
+
+// ═══════════════════════════════════════════
+// DRAWING
+// ═══════════════════════════════════════════
+function startDrawing(){
+  clearAll();
+  drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
+  setStatus('在地圖上點擊繪製多邊形，雙擊結束。');
+}
+
+function onPolygonComplete(polygon){
+  drawingManager.setDrawingMode(null);
+  currentPolygon = polygon;
+  ['btn-run','btn-autodetect','btn-auto'].forEach(id=>document.getElementById(id).disabled=false);
+
+  const refresh = () => { clearLayoutOnly(); drawEdgeLabels(polygon); };
+  google.maps.event.addListener(polygon.getPath(),'set_at',   refresh);
+  google.maps.event.addListener(polygon.getPath(),'insert_at',refresh);
+
+  const area = google.maps.geometry.spherical.computeArea(polygon.getPath());
+  setStatus(`繪製完成。面積 ≈ ${area.toFixed(1)} m²。可點「自動偵測」取得建議角度，再執行排版。`);
+  drawEdgeLabels(polygon);
+  drawAxisPreview(parseInt(document.getElementById('rotation-slider').value)||0);
+}
+
+// ═══════════════════════════════════════════
+// MODULE INFO
+// ═══════════════════════════════════════════
+function updateModuleInfo(){
+  const sel=document.getElementById('module-select').value;
+  document.getElementById('custom-module').style.display = sel==='custom'?'block':'none';
+  const m=getSelectedModule(), ori=document.getElementById('orientation').value;
+  const L=ori==='portrait'?m.length:m.width, W=ori==='portrait'?m.width:m.length;
+  document.getElementById('module-info').innerHTML =
+    `型號：${m.name}<br>有效尺寸（長×寬）：${(L*1000).toFixed(0)} × ${(W*1000).toFixed(0)} mm<br>額定功率：${m.power} W`;
+}
+function getSelectedModule(){
+  const sel=document.getElementById('module-select').value;
+  if(sel==='custom') return { name:'自訂', length:+document.getElementById('custom-length').value/1000, width:+document.getElementById('custom-width').value/1000, power:+document.getElementById('custom-power').value };
+  return MODULE_DB[+sel];
+}
+
+
+// ═══════════════════════════════════════════
+// LAYOUT ALGORITHM
+// ═══════════════════════════════════════════
+function runLayout(){
+  if(!currentPolygon){ alert('請先繪製安裝範圍'); return; }
+  clearLayoutOnly();
+  setStatus('正在計算排版…');
+
+  // 1. Turf polygon
+  const path = currentPolygon.getPath().getArray();
+  const ring  = path.map(p=>[p.lng(),p.lat()]); ring.push(ring[0]);
+  const turfPoly  = turf.polygon([ring]);
+  const totalArea = turf.area(turfPoly);
+
+  // 2. Two-layer inset: safety buffer (10cm) + clearance (1.5m)
+  const safetyM    = parseFloat(document.getElementById('safety-buffer').value)   || 0.1;
+  const clearanceM = parseFloat(document.getElementById('safety-clearance').value) || 1.5;
+
+  // Layer 1: safety buffer polygon (orange line, 10cm inside drawn polygon)
+  let safetyPoly = turfPoly;
+  if(safetyM > 0.001){
+    try { safetyPoly = turf.buffer(turfPoly, -safetyM, {units:'meters'}); } catch(e){}
+  }
+  if(safetyPoly?.geometry){
+    const sRing = safetyPoly.geometry.type==='Polygon'
+      ? safetyPoly.geometry.coordinates[0]
+      : safetyPoly.geometry.coordinates[0][0];
+    const sPoly = new google.maps.Polygon({
+      paths: sRing.map(c=>({lat:c[1],lng:c[0]})),
+      fillOpacity:0, strokeColor:'#f97316', strokeWeight:1.5, strokeOpacity:.9, zIndex:2,
+    });
+    sPoly.setMap(map); pathwayOverlays.push(sPoly);
+  }
+
+  // Layer 2: clearance zone (where modules start)
+  let insetPoly;
+  try { insetPoly = turf.buffer(safetyPoly||turfPoly, -clearanceM, {units:'meters'}); } catch(e){ insetPoly=null; }
+  if(!insetPoly?.geometry){ showNoResults('護欄淨距過大，無剩餘面積。'); return; }
+
+  const netArea = turf.area(insetPoly);
+
+  const bufRing = insetPoly.geometry.type==='Polygon'
+    ? insetPoly.geometry.coordinates[0]
+    : insetPoly.geometry.coordinates[0][0];
+
+  // Draw clearance boundary (red dashed)
+  bufferPolygon = new google.maps.Polygon({
+    paths: bufRing.map(c=>({lat:c[1],lng:c[0]})),
+    fillColor:'#ef4444', fillOpacity:.06,
+    strokeColor:'#ef4444', strokeWeight:1.5, zIndex:2,
+  });
+  bufferPolygon.setMap(map);
+
+  // Clearance distance label (between orange line and red line)
+  if(LabelOverlay && safetyPoly?.geometry){
+    const sRing2 = safetyPoly.geometry.type==='Polygon'
+      ? safetyPoly.geometry.coordinates[0]
+      : safetyPoly.geometry.coordinates[0][0];
+    // Pick midpoint between first point of safety ring and clearance ring
+    const sPt = { lat: sRing2[0][1], lng: sRing2[0][0] };
+    const cPt = { lat: bufRing[0][1], lng: bufRing[0][0] };
+    const mid = midLatLng(sPt, cPt);
+    const cl = new LabelOverlay(new google.maps.LatLng(mid.lat, mid.lng),
+      `淨距 ${clearanceM}m`, 'buffer', {x:0,y:0});
+    cl.setMap(map); labelOverlays.push(cl);
+  }
+
+  // 3. Reference centroid
+  const cen = turf.centroid(insetPoly).geometry.coordinates; // [lng,lat]
+  const refLat=cen[1], refLng=cen[0];
+
+  // 4. Project inset ring to metric
+  const ringMetric = bufRing.map(c => toMetric(c[1],c[0],refLat,refLng));
+
+  // 5. Rotation
+  const angleDeg = parseInt(document.getElementById('rotation-slider').value)||0;
+  const rotInv  = +angleDeg;   // CCW — align building long axis with y-axis
+  const rotBack = -angleDeg;   // CW  — rotate modules back to building orientation
+
+  const ringAligned = ringMetric.map(([x,y])=>rotate2D(x,y,rotInv));
+
+  // 6. Bounding box in aligned space
+  const xs=ringAligned.map(p=>p[0]), ys=ringAligned.map(p=>p[1]);
+  const minX=Math.min(...xs), maxX=Math.max(...xs);
+  const minY=Math.min(...ys), maxY=Math.max(...ys);
+
+  // 7. Module dims
+  const mod=getSelectedModule();
+  const ori=document.getElementById('orientation').value;
+  const modH = ori==='portrait'?mod.length:mod.width;
+  const modW = ori==='portrait'?mod.width :mod.length;
+
+  // 8. Pathway settings
+  const pathwayW     = parseFloat(document.getElementById('pathway-width').value)||0.3;
+  const pathwayEvery = parseInt(document.getElementById('pathway-every').value)||5;
+  const pathwayDir   = document.getElementById('pathway-dir').value;
+
+  // Track pathway bands for diamond mesh
+  const hBands = [], vBands = [];
+
+  // 9. Grid scan
+  const placed = [];
+  let rowIdx=0, y=minY;
+  let firstModCorners = null;
+
+  while(y+modH <= maxY+1e-9){
+    let colIdx=0, x=minX;
+    while(x+modW <= maxX+1e-9){
+      const corners = [[x,y],[x+modW,y],[x+modW,y+modH],[x,y+modH]];
+      const allIn = corners.every(([cx,cy])=>pointInPoly2D(cx,cy,ringAligned));
+
+      if(allIn){
+        const worldCorners = corners.map(([cx,cy])=>{
+          const [rx,ry]=rotate2D(cx,cy,rotBack);
+          return fromMetric(rx,ry,refLat,refLng);
+        });
+        placed.push(worldCorners);
+        if(!firstModCorners) firstModCorners = worldCorners;
+      }
+
+      // Vertical pathway tracking
+      const isVGap = (pathwayDir==='vertical'||pathwayDir==='both') && colIdx>0 && colIdx%pathwayEvery===0;
+      if(isVGap && rowIdx===0){
+        vBands.push({ x1:x, y1:minY, x2:x+pathwayW, y2:maxY });
+      }
+      const vGap = isVGap ? pathwayW : 0;
+      x += modW + vGap; colIdx++;
+    }
+
+    // Horizontal pathway tracking
+    const isHGap = (pathwayDir==='horizontal'||pathwayDir==='both') && rowIdx>0 && rowIdx%pathwayEvery===0;
+    if(isHGap){
+      hBands.push({ x1:minX, y1:y, x2:maxX, y2:y+pathwayW });
+    }
+    const hGap = isHGap ? pathwayW : 0;
+    y += modH + hGap; rowIdx++;
+  }
+
+  // 10. Draw modules in batches
+  let i=0;
+  function drawBatch(){
+    const end=Math.min(i+80,placed.length);
+    for(;i<end;i++){
+      const overlay = new google.maps.Polygon({
+        paths: placed[i],
+        fillColor:'#3b82f6', fillOpacity:.78,
+        strokeColor:'#93c5fd', strokeWeight:.6, zIndex:3,
+      });
+      overlay.setMap(map); moduleOverlays.push(overlay);
+    }
+    if(i<placed.length){
+      setStatus(`繪製中… ${i}/${placed.length}`);
+      setTimeout(drawBatch,0);
+    } else {
+      // ── Pathway width labels ──
+      if(LabelOverlay && pathwayW > 0.01){
+        [...hBands, ...vBands].forEach(b=>{
+          const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+          const [rx,ry] = rotate2D(cx,cy,rotBack);
+          const pos = fromMetric(rx,ry,refLat,refLng);
+          const lbl = new LabelOverlay(new google.maps.LatLng(pos.lat,pos.lng),`走道 ${pathwayW}m`,'pathway',{x:0,y:0});
+          lbl.setMap(map); labelOverlays.push(lbl);
+        });
+      }
+
+      // ── Module dimension labels on first module ──
+      if(LabelOverlay && firstModCorners){
+        // Width label: midpoint of bottom edge (corners[0]→[1]), offset below
+        const wMid = midLatLng(firstModCorners[0], firstModCorners[1]);
+        // Direction of bottom edge → perpendicular = outward (below module)
+        const ex=(firstModCorners[1].lng-firstModCorners[0].lng);
+        const ey=(firstModCorners[1].lat-firstModCorners[0].lat);
+        const elen=Math.sqrt(ex*ex+ey*ey)||1;
+        // Perpendicular outward (rotate edge 90° CW: [dy, -dx] or [-dy, dx])
+        const px=-ey/elen, py=ex/elen;
+        const wLbl = new LabelOverlay(
+          new google.maps.LatLng(wMid.lat, wMid.lng),
+          `W ${(modW*1000).toFixed(0)}mm`, 'module',
+          { x: px*18, y: -py*18 }
+        );
+        wLbl.setMap(map); labelOverlays.push(wLbl);
+
+        // Height label: midpoint of right edge (corners[1]→[2])
+        const hMid = midLatLng(firstModCorners[1], firstModCorners[2]);
+        const ex2=(firstModCorners[2].lng-firstModCorners[1].lng);
+        const ey2=(firstModCorners[2].lat-firstModCorners[1].lat);
+        const elen2=Math.sqrt(ex2*ex2+ey2*ey2)||1;
+        const px2=-ey2/elen2, py2=ex2/elen2;
+        const hLbl = new LabelOverlay(
+          new google.maps.LatLng(hMid.lat, hMid.lng),
+          `H ${(modH*1000).toFixed(0)}mm`, 'module',
+          { x: px2*18, y: -py2*18 }
+        );
+        hLbl.setMap(map); labelOverlays.push(hLbl);
+      }
+
+      finishLayout(placed.length, totalArea, netArea, mod, angleDeg);
+    }
+  }
+  drawBatch();
+}
+
+function finishLayout(count, totalArea, netArea, mod, angle){
+  const kwp=(count*mod.power/1000).toFixed(2);
+  const fp =count*mod.length*mod.width;
+  const util=netArea>0?(fp/netArea*100).toFixed(1):'0.0';
+  const unused=(netArea-fp).toFixed(1);
+
+  document.getElementById('no-results').style.display='none';
+  document.getElementById('stats').style.display='block';
+  document.getElementById('r-total-area').textContent=`${totalArea.toFixed(1)} m²`;
+  document.getElementById('r-net-area').textContent  =`${netArea.toFixed(1)} m²`;
+  document.getElementById('r-angle').textContent     =`${angle}°`;
+  document.getElementById('r-count').textContent     =`${count} 片`;
+  document.getElementById('r-capacity').textContent  =`${kwp} kWp`;
+  document.getElementById('r-util').textContent      =`${util} %`;
+  document.getElementById('r-unused').textContent    =`${unused} m²`;
+
+  setStatus(`排版完成（旋轉 ${angle}°）：${count} 片 × ${mod.power}W = ${kwp} kWp，使用率 ${util}%`);
+}
+
+function showNoResults(msg){
+  document.getElementById('stats').style.display='none';
+  document.getElementById('no-results').style.display='block';
+  document.getElementById('no-results').textContent=msg||'尚未執行排版。';
+}
+
+// ═══════════════════════════════════════════
+// CLEAR
+// ═══════════════════════════════════════════
+function clearLayoutOnly(){
+  moduleOverlays.forEach(o=>o.setMap(null));  moduleOverlays=[];
+  pathwayOverlays.forEach(o=>o.setMap(null)); pathwayOverlays=[];
+  labelOverlays.forEach(o=>o.setMap(null));   labelOverlays=[];
+  bufferPolygon?.setMap(null); bufferPolygon=null;
+  showNoResults('尚未執行排版，請先繪製安裝範圍。');
+}
+
+function clearAll(){
+  clearLayoutOnly();
+  edgeLabels.forEach(l=>l.setMap(null)); edgeLabels=[];
+  currentPolygon?.setMap(null); currentPolygon=null;
+  axisOverlay?.setMap(null);    axisOverlay=null;
+  ['btn-run','btn-autodetect','btn-auto'].forEach(id=>document.getElementById(id).disabled=true);
+  drawingManager?.setDrawingMode(null);
+  setStatus('已清除。點擊「繪製安裝範圍」重新開始。');
+}
+
+// ═══════════════════════════════════════════
+// KEYBOARD SHORTCUTS
+// ═══════════════════════════════════════════
+document.addEventListener('keydown',e=>{
+  if(!map) return;
+  if(e.key==='p'||e.key==='P') startDrawing();
+  if(e.key==='r'||e.key==='R') runLayout();
+  if(e.key==='d'||e.key==='D') autoDetectRotation();
+  if(e.key==='Escape') drawingManager?.setDrawingMode(null);
+});
+</script>
+</body>
+</html>
