@@ -115,7 +115,15 @@
           </div>
           <button class="tool-btn secondary" id="btn-add-mod"    onclick="toggleAddMode()">➕ 新增（點地圖）</button>
           <button class="tool-btn secondary" id="btn-box-sel"    onclick="toggleBoxSel()">⬚ 框選多片</button>
-          <button class="tool-btn secondary" id="btn-copy-mod"   onclick="copySelectedMod()" disabled>⧉ 複製選取</button>
+          <div style="font-size:10px;color:#64748b;margin-top:2px">複製方向（貼齊不重疊）</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;text-align:center">
+            <div></div>
+            <button class="tool-btn secondary" id="btn-copy-up"    onclick="copyDir('up')"    disabled style="padding:4px 0;font-size:13px">⧉↑</button>
+            <div></div>
+            <button class="tool-btn secondary" id="btn-copy-left"  onclick="copyDir('left')"  disabled style="padding:4px 0;font-size:13px">⧉←</button>
+            <button class="tool-btn secondary" id="btn-copy-down"  onclick="copyDir('down')"  disabled style="padding:4px 0;font-size:13px">⧉↓</button>
+            <button class="tool-btn secondary" id="btn-copy-right" onclick="copyDir('right')" disabled style="padding:4px 0;font-size:13px">⧉→</button>
+          </div>
           <button class="tool-btn danger"    id="btn-delete-mod" onclick="deleteSelectedMod()" disabled>🗑 刪除選取</button>
           <button class="tool-btn secondary" id="btn-desel"      onclick="deselectAll()" disabled style="font-size:11px;padding:5px">✕ 取消選取</button>
           <div style="font-size:10px;color:#475569;line-height:1.5">Shift+點選 可加選｜拖曳多片一起移動</div>
@@ -785,7 +793,8 @@ function deselectAll(){
 function deselectMod(){ deselectAll(); } // alias for clearAll
 function updateSelBtns(){
   const n=selectedMods.size;
-  ['btn-delete-mod','btn-copy-mod','btn-desel'].forEach(id=>document.getElementById(id).disabled=n===0);
+  ['btn-delete-mod','btn-copy-up','btn-copy-down','btn-copy-left','btn-copy-right','btn-desel']
+    .forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled=n===0; });
   document.getElementById('sel-count').textContent = n>0?`已選 ${n} 片`:'';
 }
 
@@ -798,14 +807,15 @@ function toggleEditMode(){
   if(editMode){
     btn.textContent='✓ 完成編輯'; btn.className='tool-btn success';
     panel.style.display='flex';
+    map.setOptions({draggable:false});   // 鎖定地圖，避免誤拖
     moduleOverlays.forEach(p=>p.setOptions({draggable:true}));
-    setStatus('編輯模式：➕新增　⬚框選多片　⧉複製　🗑刪除　Shift+點選 加選');
+    setStatus('編輯模式：➕新增　⬚框選多片　方向複製　🗑刪除　Shift+點選 加選');
   } else {
     if(addModMode) toggleAddMode();
     if(boxSelMode) exitBoxSel();
     btn.textContent='✎ 手動編輯模組'; btn.className='tool-btn secondary';
     panel.style.display='none'; deselectAll();
-    map.setOptions({draggableCursor:null,draggable:true});
+    map.setOptions({draggableCursor:null, draggable:true});
     moduleOverlays.forEach(p=>p.setOptions({draggable:false}));
     updateCountDisplay(); setStatus(`編輯結束。共 ${moduleOverlays.length} 片。`);
   }
@@ -906,20 +916,30 @@ function onBoxUp(e){
 }
 
 // ═══════════════════════════════════════════
-// COPY — offset along height axis, auto-select copies
+// COPY — 4-direction, edge-to-edge, no overlap
+// dir: 'up'|'down'|'left'|'right' relative to module orientation
+//   up/down  = along height axis (corners[1]→corners[2])
+//   right/left = along width axis (corners[0]→corners[1])
 // ═══════════════════════════════════════════
-function copySelectedMod(){
+function copyDir(dir){
   if(selectedMods.size===0) return;
   const copies=[];
   selectedMods.forEach(orig=>{
     const path=orig.getPath().getArray();
-    const p1=path[1],p2=path[2];
-    const dy=p2.lat()-p1.lat(),dx=p2.lng()-p1.lng();
-    const nc=path.map(p=>({lat:p.lat()+dy*1.02,lng:p.lng()+dx*1.02}));
+    // height vector: corners[1]→corners[2]
+    const dh_lat=path[2].lat()-path[1].lat(), dh_lng=path[2].lng()-path[1].lng();
+    // width vector: corners[0]→corners[1]
+    const dw_lat=path[1].lat()-path[0].lat(), dw_lng=path[1].lng()-path[0].lng();
+    let dlat=0, dlng=0;
+    if(dir==='up')    { dlat= dh_lat; dlng= dh_lng; }
+    if(dir==='down')  { dlat=-dh_lat; dlng=-dh_lng; }
+    if(dir==='right') { dlat= dw_lat; dlng= dw_lng; }
+    if(dir==='left')  { dlat=-dw_lat; dlng=-dw_lng; }
+    const nc=path.map(p=>({lat:p.lat()+dlat, lng:p.lng()+dlng}));
     copies.push(createModulePolygon(nc));
   });
   selectMods(copies,false); updateCountDisplay();
-  setStatus(`已複製 ${copies.length} 片（共 ${moduleOverlays.length} 片）。拖曳到目標位置。`);
+  setStatus(`已複製 ${copies.length} 片（共 ${moduleOverlays.length} 片）。`);
 }
 
 // ═══════════════════════════════════════════
