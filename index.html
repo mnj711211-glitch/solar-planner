@@ -75,6 +75,7 @@
   #rot-indicator{position:absolute;top:12px;left:12px;background:rgba(15,23,42,.85);border:1px solid #334155;border-radius:8px;padding:8px 12px;z-index:5;font-size:12px;color:#94a3b8;display:none;pointer-events:none}
   #rot-indicator span{color:#a78bfa;font-weight:700}
 
+
   /* ── Dimension label (injected into map) ── */
   .dim-label{
     position:absolute; pointer-events:none;
@@ -106,6 +107,19 @@
         <button class="tool-btn primary"  id="btn-draw"  onclick="startDrawing()" disabled>✏ 繪製安裝範圍</button>
         <button class="tool-btn warn"     id="btn-auto"  onclick="autoDetectRotation()" disabled>🔍 自動偵測屋頂角度</button>
         <button class="tool-btn success"  id="btn-run"   onclick="runLayout()" disabled>⚡ 執行自動排版</button>
+        <button class="tool-btn secondary" id="btn-edit" onclick="toggleEditMode()" disabled>✎ 手動編輯模組</button>
+        <div id="edit-panel" style="display:none;flex-direction:column;gap:5px;padding:8px;background:#0f172a;border-radius:8px;margin-top:2px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:#64748b">編輯模式</span>
+            <span id="sel-count" style="font-size:11px;color:#22c55e;font-weight:700"></span>
+          </div>
+          <button class="tool-btn secondary" id="btn-add-mod"    onclick="toggleAddMode()">➕ 新增（點地圖）</button>
+          <button class="tool-btn secondary" id="btn-box-sel"    onclick="toggleBoxSel()">⬚ 框選多片</button>
+          <button class="tool-btn secondary" id="btn-copy-mod"   onclick="copySelectedMod()" disabled>⧉ 複製選取</button>
+          <button class="tool-btn danger"    id="btn-delete-mod" onclick="deleteSelectedMod()" disabled>🗑 刪除選取</button>
+          <button class="tool-btn secondary" id="btn-desel"      onclick="deselectAll()" disabled style="font-size:11px;padding:5px">✕ 取消選取</button>
+          <div style="font-size:10px;color:#475569;line-height:1.5">Shift+點選 可加選｜拖曳多片一起移動</div>
+        </div>
         <button class="tool-btn danger"   id="btn-clear" onclick="clearAll()" disabled>✕ 清除全部</button>
       </div>
     </div>
@@ -189,8 +203,9 @@
     <div id="map"></div>
     <div id="map-overlay">
       <div class="icon">🗺</div>
-      <p>請在右上角輸入 Google Maps API Key 並點擊「載入地圖」以開始使用。<br>需啟用 <b>Maps JavaScript API</b> 及 <b>Drawing Library</b>。</p>
+      <p>地圖載入中，請稍候…</p>
     </div>
+
     <div id="rot-indicator">排版旋轉角：<span id="rot-ind-val">0°</span></div>
     <div id="legend" style="display:none">
       <h4>圖例</h4>
@@ -226,10 +241,15 @@ let currentPolygon  = null;
 let bufferPolygon   = null;
 let axisOverlay     = null;
 let moduleOverlays  = [];   // blue module rectangles
-let pathwayOverlays = [];   // diamond mesh polygons
+let pathwayOverlays = [];   // buffer/pathway polygons
 let labelOverlays   = [];   // module + buffer + pathway labels
 let edgeLabels      = [];   // polygon edge length labels
 let LabelOverlay;           // class — defined after Google Maps loads
+let editMode    = false;
+let addModMode  = false;
+let boxSelMode  = false;
+let selectedMods = new Set();   // multi-select set
+let lastLayoutParams = null;
 
 function setStatus(t){ document.getElementById('status-text').textContent = t; }
 
@@ -393,7 +413,9 @@ window.initMap = function(){
   });
   drawingManager.setMap(map);
   google.maps.event.addListener(drawingManager,'polygoncomplete',onPolygonComplete);
+  google.maps.event.addListener(map,'click', onMapClick);
   ['btn-draw','btn-clear'].forEach(id=>document.getElementById(id).disabled=false);
+
   setStatus('地圖載入完成。點擊「繪製安裝範圍」開始框選屋頂。');
   updateModuleInfo();
 };
@@ -575,35 +597,33 @@ function runLayout(){
         if(!firstModCorners) firstModCorners = worldCorners;
       }
 
-      // Vertical pathway tracking
+      // Vertical pathway: only insert gap if at least one more column fits after it
       const isVGap = (pathwayDir==='vertical'||pathwayDir==='both') && colIdx>0 && colIdx%pathwayEvery===0;
-      if(isVGap && rowIdx===0){
-        vBands.push({ x1:x, y1:minY, x2:x+pathwayW, y2:maxY });
+      const vGap   = (isVGap && x+modW+pathwayW+modW <= maxX+1e-9) ? pathwayW : 0;
+      if(vGap > 0 && rowIdx===0){
+        vBands.push({ x1:x+modW, y1:minY, x2:x+modW+vGap, y2:maxY });
       }
-      const vGap = isVGap ? pathwayW : 0;
       x += modW + vGap; colIdx++;
     }
 
-    // Horizontal pathway tracking
+    // Horizontal pathway: only insert gap if at least one more row fits after it
     const isHGap = (pathwayDir==='horizontal'||pathwayDir==='both') && rowIdx>0 && rowIdx%pathwayEvery===0;
-    if(isHGap){
-      hBands.push({ x1:minX, y1:y, x2:maxX, y2:y+pathwayW });
+    const hGap   = (isHGap && y+modH+pathwayW+modH <= maxY+1e-9) ? pathwayW : 0;
+    if(hGap > 0){
+      hBands.push({ x1:minX, y1:y+modH, x2:maxX, y2:y+modH+hGap });
     }
-    const hGap = isHGap ? pathwayW : 0;
     y += modH + hGap; rowIdx++;
   }
+
+  // Save params so manual-add knows current rotation/dims/refpoint
+  lastLayoutParams = { modH, modW, angleDeg, refLat, refLng };
 
   // 10. Draw modules in batches
   let i=0;
   function drawBatch(){
     const end=Math.min(i+80,placed.length);
     for(;i<end;i++){
-      const overlay = new google.maps.Polygon({
-        paths: placed[i],
-        fillColor:'#3b82f6', fillOpacity:.78,
-        strokeColor:'#93c5fd', strokeWeight:.6, zIndex:3,
-      });
-      overlay.setMap(map); moduleOverlays.push(overlay);
+      createModulePolygon(placed[i]);
     }
     if(i<placed.length){
       setStatus(`繪製中… ${i}/${placed.length}`);
@@ -673,6 +693,7 @@ function finishLayout(count, totalArea, netArea, mod, angle){
   document.getElementById('r-util').textContent      =`${util} %`;
   document.getElementById('r-unused').textContent    =`${unused} m²`;
 
+  document.getElementById('btn-edit').disabled = false;
   setStatus(`排版完成（旋轉 ${angle}°）：${count} 片 × ${mod.power}W = ${kwp} kWp，使用率 ${util}%`);
 }
 
@@ -694,24 +715,250 @@ function clearLayoutOnly(){
 }
 
 function clearAll(){
+  if(editMode) toggleEditMode();
   clearLayoutOnly();
   edgeLabels.forEach(l=>l.setMap(null)); edgeLabels=[];
   currentPolygon?.setMap(null); currentPolygon=null;
   axisOverlay?.setMap(null);    axisOverlay=null;
-  ['btn-run','btn-autodetect','btn-auto'].forEach(id=>document.getElementById(id).disabled=true);
+  ['btn-run','btn-autodetect','btn-auto','btn-edit'].forEach(id=>document.getElementById(id).disabled=true);
   drawingManager?.setDrawingMode(null);
+  lastLayoutParams=null;
   setStatus('已清除。點擊「繪製安裝範圍」重新開始。');
+}
+
+// ═══════════════════════════════════════════
+// MODULE POLYGON FACTORY
+// ═══════════════════════════════════════════
+function getPolyCentroid(poly){
+  const p = poly.getPath().getArray();
+  return { lat:p.reduce((s,v)=>s+v.lat(),0)/p.length, lng:p.reduce((s,v)=>s+v.lng(),0)/p.length };
+}
+
+function createModulePolygon(corners){
+  const poly = new google.maps.Polygon({
+    paths:corners, fillColor:'#3b82f6', fillOpacity:.78,
+    strokeColor:'#93c5fd', strokeWeight:.6, zIndex:3, draggable:false, clickable:true,
+  });
+  poly.setMap(map); moduleOverlays.push(poly);
+
+  google.maps.event.addListener(poly,'click', e => {
+    if(!editMode) return; e.stop();
+    if(e.domEvent?.shiftKey) toggleModInSel(poly); else selectMods([poly]);
+  });
+
+  // multi-drag: record pre-drag paths for all selected; on dragend sync others
+  google.maps.event.addListener(poly,'dragstart', ()=>{
+    selectedMods.forEach(m => {
+      m._pp = m.getPath().getArray().map(p=>({lat:p.lat(),lng:p.lng()}));
+    });
+  });
+  google.maps.event.addListener(poly,'dragend', ()=>{
+    if(selectedMods.size < 2 || !poly._pp) return;
+    const nc = getPolyCentroid(poly);
+    const oc = { lat:poly._pp.reduce((s,p)=>s+p.lat,0)/poly._pp.length,
+                 lng:poly._pp.reduce((s,p)=>s+p.lng,0)/poly._pp.length };
+    const dLat=nc.lat-oc.lat, dLng=nc.lng-oc.lng;
+    selectedMods.forEach(m=>{ if(m===poly||!m._pp) return;
+      m.setPath(m._pp.map(p=>({lat:p.lat+dLat,lng:p.lng+dLng}))); });
+    setStatus(`已移動 ${selectedMods.size} 片。`);
+  });
+  return poly;
+}
+
+// ═══════════════════════════════════════════
+// SELECTION (multi)
+// ═══════════════════════════════════════════
+function selectMods(polys, add=false){
+  if(!add){ selectedMods.forEach(m=>m.setOptions({fillColor:'#3b82f6',strokeColor:'#93c5fd',fillOpacity:.78})); selectedMods.clear(); }
+  polys.forEach(p=>{ selectedMods.add(p); p.setOptions({fillColor:'#22c55e',strokeColor:'#86efac',fillOpacity:.9}); });
+  updateSelBtns();
+}
+function toggleModInSel(poly){
+  if(selectedMods.has(poly)){ selectedMods.delete(poly); poly.setOptions({fillColor:'#3b82f6',strokeColor:'#93c5fd',fillOpacity:.78}); }
+  else { selectedMods.add(poly); poly.setOptions({fillColor:'#22c55e',strokeColor:'#86efac',fillOpacity:.9}); }
+  updateSelBtns();
+}
+function deselectAll(){
+  selectedMods.forEach(m=>m.setOptions({fillColor:'#3b82f6',strokeColor:'#93c5fd',fillOpacity:.78}));
+  selectedMods.clear(); updateSelBtns();
+}
+function deselectMod(){ deselectAll(); } // alias for clearAll
+function updateSelBtns(){
+  const n=selectedMods.size;
+  ['btn-delete-mod','btn-copy-mod','btn-desel'].forEach(id=>document.getElementById(id).disabled=n===0);
+  document.getElementById('sel-count').textContent = n>0?`已選 ${n} 片`:'';
+}
+
+// ═══════════════════════════════════════════
+// EDIT MODE
+// ═══════════════════════════════════════════
+function toggleEditMode(){
+  editMode=!editMode;
+  const btn=document.getElementById('btn-edit'), panel=document.getElementById('edit-panel');
+  if(editMode){
+    btn.textContent='✓ 完成編輯'; btn.className='tool-btn success';
+    panel.style.display='flex';
+    moduleOverlays.forEach(p=>p.setOptions({draggable:true}));
+    setStatus('編輯模式：➕新增　⬚框選多片　⧉複製　🗑刪除　Shift+點選 加選');
+  } else {
+    if(addModMode) toggleAddMode();
+    if(boxSelMode) exitBoxSel();
+    btn.textContent='✎ 手動編輯模組'; btn.className='tool-btn secondary';
+    panel.style.display='none'; deselectAll();
+    map.setOptions({draggableCursor:null,draggable:true});
+    moduleOverlays.forEach(p=>p.setOptions({draggable:false}));
+    updateCountDisplay(); setStatus(`編輯結束。共 ${moduleOverlays.length} 片。`);
+  }
+}
+
+// ═══════════════════════════════════════════
+// ADD MODE
+// ═══════════════════════════════════════════
+function toggleAddMode(){
+  addModMode=!addModMode;
+  const btn=document.getElementById('btn-add-mod');
+  if(addModMode){
+    if(boxSelMode) exitBoxSel();
+    btn.textContent='✕ 取消新增'; btn.className='tool-btn warn';
+    map.setOptions({draggableCursor:'crosshair'});
+    setStatus('點擊地圖任意位置放置模組。再按一次取消。');
+  } else {
+    btn.textContent='➕ 新增（點地圖）'; btn.className='tool-btn secondary';
+    map.setOptions({draggableCursor:null});
+  }
+}
+function onMapClick(e){ if(!editMode||!addModMode||!lastLayoutParams) return; addModuleAt(e.latLng); }
+function addModuleAt(latLng){
+  const {modH,modW,angleDeg,refLat,refLng}=lastLayoutParams;
+  const [lx,ly]=toMetric(latLng.lat(),latLng.lng(),refLat,refLng);
+  const [ax,ay]=rotate2D(lx,ly,angleDeg);
+  const corners=[[ax-modW/2,ay-modH/2],[ax+modW/2,ay-modH/2],[ax+modW/2,ay+modH/2],[ax-modW/2,ay+modH/2]];
+  const wc=corners.map(([cx,cy])=>{ const [rx,ry]=rotate2D(cx,cy,-angleDeg); return fromMetric(rx,ry,refLat,refLng); });
+  const poly=createModulePolygon(wc); selectMods([poly]); updateCountDisplay();
+  setStatus(`已新增（共 ${moduleOverlays.length} 片）。可拖曳調整。`);
+}
+
+// ═══════════════════════════════════════════
+// BOX SELECT
+// ═══════════════════════════════════════════
+let boxStartPx=null, boxEl=null;
+function toggleBoxSel(){
+  boxSelMode=!boxSelMode;
+  const btn=document.getElementById('btn-box-sel');
+  if(boxSelMode){
+    if(addModMode) toggleAddMode();
+    btn.textContent='✕ 取消框選'; btn.className='tool-btn warn';
+    map.setOptions({draggable:false,draggableCursor:'crosshair'});
+    document.getElementById('map-container').addEventListener('mousedown',onBoxDown);
+    setStatus('在地圖上拖曳畫框選取模組。Shift 可追加選取。');
+  } else { exitBoxSel(); }
+}
+function exitBoxSel(){
+  boxSelMode=false;
+  const btn=document.getElementById('btn-box-sel');
+  if(btn){btn.textContent='⬚ 框選多片';btn.className='tool-btn secondary';}
+  map.setOptions({draggable:true,draggableCursor:null});
+  document.getElementById('map-container').removeEventListener('mousedown',onBoxDown);
+  document.removeEventListener('mousemove',onBoxMove);
+  document.removeEventListener('mouseup',onBoxUp);
+  if(boxEl){boxEl.remove();boxEl=null;} boxStartPx=null;
+}
+function onBoxDown(e){
+  const mc=document.getElementById('map-container').getBoundingClientRect();
+  boxStartPx={x:e.clientX-mc.left,y:e.clientY-mc.top,cx:e.clientX,cy:e.clientY};
+  boxEl=document.createElement('div');
+  boxEl.style.cssText='position:absolute;border:2px dashed #38bdf8;background:rgba(56,189,248,.1);pointer-events:none;z-index:20;';
+  boxEl.style.left=boxStartPx.x+'px'; boxEl.style.top=boxStartPx.y+'px';
+  document.getElementById('map-container').appendChild(boxEl);
+  document.addEventListener('mousemove',onBoxMove);
+  document.addEventListener('mouseup',onBoxUp);
+  e.preventDefault();
+}
+function onBoxMove(e){
+  if(!boxEl||!boxStartPx) return;
+  const mc=document.getElementById('map-container').getBoundingClientRect();
+  const x=e.clientX-mc.left,y=e.clientY-mc.top;
+  boxEl.style.left=Math.min(boxStartPx.x,x)+'px'; boxEl.style.top=Math.min(boxStartPx.y,y)+'px';
+  boxEl.style.width=Math.abs(x-boxStartPx.x)+'px'; boxEl.style.height=Math.abs(y-boxStartPx.y)+'px';
+}
+function onBoxUp(e){
+  document.removeEventListener('mousemove',onBoxMove);
+  document.removeEventListener('mouseup',onBoxUp);
+  if(!boxStartPx||!boxEl){exitBoxSel();return;}
+  const mc=document.getElementById('map-container').getBoundingClientRect();
+  const x1=Math.min(boxStartPx.cx,e.clientX),x2=Math.max(boxStartPx.cx,e.clientX);
+  const y1=Math.min(boxStartPx.cy,e.clientY),y2=Math.max(boxStartPx.cy,e.clientY);
+  function pxToLL(cx,cy){
+    const b=map.getBounds(); if(!b) return null;
+    const ne=b.getNorthEast(),sw=b.getSouthWest();
+    return {lat:ne.lat()-(ne.lat()-sw.lat())*(cy-mc.top)/mc.height,
+            lng:sw.lng()+(ne.lng()-sw.lng())*(cx-mc.left)/mc.width};
+  }
+  const swLL=pxToLL(x1,y2),neLL=pxToLL(x2,y1);
+  if(swLL&&neLL){
+    const gb=new google.maps.LatLngBounds(swLL,neLL);
+    const inBox=moduleOverlays.filter(p=>gb.contains(getPolyCentroid(p)));
+    selectMods(inBox, e.shiftKey);
+    setStatus(`已框選 ${inBox.length} 片。可拖曳移動、複製或刪除。`);
+  }
+  if(boxEl){boxEl.remove();boxEl=null;}
+  exitBoxSel();
+}
+
+// ═══════════════════════════════════════════
+// COPY — offset along height axis, auto-select copies
+// ═══════════════════════════════════════════
+function copySelectedMod(){
+  if(selectedMods.size===0) return;
+  const copies=[];
+  selectedMods.forEach(orig=>{
+    const path=orig.getPath().getArray();
+    const p1=path[1],p2=path[2];
+    const dy=p2.lat()-p1.lat(),dx=p2.lng()-p1.lng();
+    const nc=path.map(p=>({lat:p.lat()+dy*1.02,lng:p.lng()+dx*1.02}));
+    copies.push(createModulePolygon(nc));
+  });
+  selectMods(copies,false); updateCountDisplay();
+  setStatus(`已複製 ${copies.length} 片（共 ${moduleOverlays.length} 片）。拖曳到目標位置。`);
+}
+
+// ═══════════════════════════════════════════
+// DELETE — all selected
+// ═══════════════════════════════════════════
+function deleteSelectedMod(){
+  if(selectedMods.size===0) return;
+  const n=selectedMods.size;
+  selectedMods.forEach(m=>m.setMap(null));
+  moduleOverlays=moduleOverlays.filter(m=>!selectedMods.has(m));
+  selectedMods.clear(); updateSelBtns(); updateCountDisplay();
+  setStatus(`已刪除 ${n} 片。剩餘 ${moduleOverlays.length} 片。`);
+}
+
+function updateCountDisplay(){
+  const count=moduleOverlays.length;
+  document.getElementById('r-count').textContent=`${count} 片`;
+  const mod=getSelectedModule();
+  document.getElementById('r-capacity').textContent=`${(count*mod.power/1000).toFixed(2)} kWp`;
 }
 
 // ═══════════════════════════════════════════
 // KEYBOARD SHORTCUTS
 // ═══════════════════════════════════════════
+// Auto-load map on page open
+window.addEventListener('load', loadGoogleMaps);
+
 document.addEventListener('keydown',e=>{
   if(!map) return;
   if(e.key==='p'||e.key==='P') startDrawing();
   if(e.key==='r'||e.key==='R') runLayout();
   if(e.key==='d'||e.key==='D') autoDetectRotation();
-  if(e.key==='Escape') drawingManager?.setDrawingMode(null);
+  if(e.key==='e'||e.key==='E'){ if(!document.getElementById('btn-edit').disabled) toggleEditMode(); }
+  if((e.key==='Delete'||e.key==='Backspace') && editMode) deleteSelectedMod();
+  if(e.key==='Escape'){
+    drawingManager?.setDrawingMode(null);
+    if(boxSelMode) exitBoxSel();
+    if(editMode){ deselectAll(); if(addModMode) toggleAddMode(); }
+  }
 });
 </script>
 </body>
