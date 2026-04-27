@@ -105,6 +105,18 @@
       <h3>繪圖工具</h3>
       <div id="tool-btns">
         <button class="tool-btn primary"  id="btn-draw"  onclick="startDrawing()" disabled>✏ 繪製安裝範圍</button>
+        <button class="tool-btn secondary" id="btn-ridge" onclick="toggleRidgeDraw()" disabled>📐 標記屋脊線</button>
+        <div id="ridge-panel" style="display:none;flex-direction:column;gap:5px;padding:8px;background:#0f172a;border-radius:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:#f59e0b">⚠ 屋脊線模式</span>
+            <span id="ridge-hint" style="font-size:10px;color:#64748b">點兩點標記屋脊</span>
+          </div>
+          <div class="field-row">
+            <label>屋脊淨距 (m)</label>
+            <input type="number" id="ridge-clearance" value="0.3" min="0" max="5" step="0.1" style="width:60px" title="屋脊兩側各留多少不排模組">
+          </div>
+          <button class="tool-btn danger" onclick="clearRidge()" style="font-size:11px;padding:5px">✕ 清除屋脊線</button>
+        </div>
         <button class="tool-btn warn"     id="btn-auto"  onclick="autoDetectRotation()" disabled>🔍 自動偵測屋頂角度</button>
         <button class="tool-btn success"  id="btn-run"   onclick="runLayout()" disabled>⚡ 執行自動排版</button>
         <button class="tool-btn secondary" id="btn-edit" onclick="toggleEditMode()" disabled>✎ 手動編輯模組</button>
@@ -258,6 +270,10 @@ let addModMode  = false;
 let boxSelMode  = false;
 let selectedMods = new Set();   // multi-select set
 let lastLayoutParams = null;
+let ridgePts       = null;      // [{lat,lng},{lat,lng}] ridge endpoints
+let ridgePolyline  = null;      // google.maps.Polyline (visual)
+let ridgeDrawMode  = false;
+let ridgeClickStep = 0;         // 0=idle, 1=waiting for 2nd pt
 
 function setStatus(t){ document.getElementById('status-text').textContent = t; }
 
@@ -455,7 +471,7 @@ function startDrawing(){
 function onPolygonComplete(polygon){
   drawingManager.setDrawingMode(null);
   currentPolygon = polygon;
-  ['btn-run','btn-autodetect','btn-auto'].forEach(id=>document.getElementById(id).disabled=false);
+  ['btn-run','btn-autodetect','btn-auto','btn-ridge'].forEach(id=>document.getElementById(id).disabled=false);
 
   const refresh = () => { clearLayoutOnly(); drawEdgeLabels(polygon); };
   google.maps.event.addListener(polygon.getPath(),'set_at',   refresh);
@@ -465,6 +481,73 @@ function onPolygonComplete(polygon){
   setStatus(`繪製完成。面積 ≈ ${area.toFixed(1)} m²。可點「自動偵測」取得建議角度，再執行排版。`);
   drawEdgeLabels(polygon);
   drawAxisPreview(parseInt(document.getElementById('rotation-slider').value)||0);
+}
+
+// ═══════════════════════════════════════════
+// RIDGE LINE
+// ═══════════════════════════════════════════
+function toggleRidgeDraw(){
+  ridgeDrawMode = !ridgeDrawMode;
+  ridgeClickStep = 0;
+  const btn   = document.getElementById('btn-ridge');
+  const panel = document.getElementById('ridge-panel');
+  if(ridgeDrawMode){
+    btn.textContent='✕ 取消屋脊標記'; btn.className='tool-btn warn';
+    panel.style.display='flex';
+    map.setOptions({draggableCursor:'crosshair'});
+    document.getElementById('ridge-hint').textContent='點第 1 點…';
+    setStatus('請在地圖上點擊屋脊線的兩個端點。(1/2)');
+  } else {
+    btn.textContent = ridgePts ? '✏ 重繪屋脊線' : '📐 標記屋脊線';
+    btn.className   = ridgePts ? 'tool-btn warn'  : 'tool-btn secondary';
+    map.setOptions({draggableCursor:null});
+    setStatus(ridgePts ? '屋脊線已設定，執行排版時會分兩側排列。' : '已取消屋脊線標記。');
+  }
+}
+
+function onRidgeClick(latLng){
+  ridgeClickStep++;
+  if(ridgeClickStep === 1){
+    ridgePts = [{lat:latLng.lat(), lng:latLng.lng()}, null];
+    document.getElementById('ridge-hint').textContent='點第 2 點…';
+    setStatus('已標記屋脊第 1 點，請點第 2 點。(2/2)');
+    // temp marker for first point
+    if(!ridgePolyline){
+      ridgePolyline = new google.maps.Polyline({
+        path:[ridgePts[0],ridgePts[0]],
+        strokeColor:'#f59e0b', strokeWeight:3, strokeOpacity:.7, zIndex:10,
+      });
+      ridgePolyline.setMap(map);
+    }
+  } else {
+    ridgePts[1] = {lat:latLng.lat(), lng:latLng.lng()};
+    // Draw final dashed ridge polyline
+    if(ridgePolyline) ridgePolyline.setMap(null);
+    ridgePolyline = new google.maps.Polyline({
+      path: ridgePts,
+      strokeColor:'#f59e0b', strokeWeight:3, strokeOpacity:1,
+      icons:[{ icon:{path:'M 0,-1 0,1', strokeOpacity:1, scale:3},
+               offset:'0', repeat:'14px' }],
+      zIndex:10,
+    });
+    ridgePolyline.setMap(map);
+    // Exit draw mode
+    ridgeDrawMode = false; ridgeClickStep = 0;
+    map.setOptions({draggableCursor:null});
+    const btn = document.getElementById('btn-ridge');
+    btn.textContent='✏ 重繪屋脊線'; btn.className='tool-btn warn';
+    document.getElementById('ridge-hint').textContent='屋脊線已設定 ✓';
+    setStatus('屋脊線設定完成！點「⚡ 執行自動排版」分兩側排版。');
+  }
+}
+
+function clearRidge(){
+  ridgePts=null; ridgeDrawMode=false; ridgeClickStep=0;
+  if(ridgePolyline){ ridgePolyline.setMap(null); ridgePolyline=null; }
+  document.getElementById('ridge-panel').style.display='none';
+  const btn=document.getElementById('btn-ridge');
+  if(btn){ btn.textContent='📐 標記屋脊線'; btn.className='tool-btn secondary'; }
+  map.setOptions({draggableCursor:null});
 }
 
 // ═══════════════════════════════════════════
@@ -585,42 +668,63 @@ function runLayout(){
   // Track pathway bands for diamond mesh
   const hBands = [], vBands = [];
 
+  // Ridge line in aligned frame
+  let ridgeAlignedX = null, ridgeClearHalf = 0;
+  if(ridgePts && ridgePts[0] && ridgePts[1]){
+    ridgeClearHalf = (parseFloat(document.getElementById('ridge-clearance').value)||0.3) / 2;
+    const rps = ridgePts.map(p=>{
+      const [mx,my]=toMetric(p.lat,p.lng,refLat,refLng);
+      return rotate2D(mx,my,rotInv);
+    });
+    ridgeAlignedX = (rps[0][0]+rps[1][0])/2;
+  }
+
+  // Helper: place one cell if all corners inside inset poly
+  function tryPlace(x,y){
+    const corners=[[x,y],[x+modW,y],[x+modW,y+modH],[x,y+modH]];
+    if(!corners.every(([cx,cy])=>pointInPoly2D(cx,cy,ringAligned))) return;
+    const wc=corners.map(([cx,cy])=>{
+      const [rx,ry]=rotate2D(cx,cy,rotBack);
+      return fromMetric(rx,ry,refLat,refLng);
+    });
+    placed.push(wc);
+    if(!firstModCorners) firstModCorners=wc;
+  }
+
   // 9. Grid scan
   const placed = [];
   let rowIdx=0, y=minY;
   let firstModCorners = null;
 
   while(y+modH <= maxY+1e-9){
-    let colIdx=0, x=minX;
-    while(x+modW <= maxX+1e-9){
-      const corners = [[x,y],[x+modW,y],[x+modW,y+modH],[x,y+modH]];
-      const allIn = corners.every(([cx,cy])=>pointInPoly2D(cx,cy,ringAligned));
+    if(ridgeAlignedX !== null){
+      // ── RIDGE MODE ──
+      // Left face: fill from left edge inward toward ridge
+      const leftMax  = ridgeAlignedX - ridgeClearHalf;
+      let x=minX;
+      while(x+modW <= leftMax+1e-9){ tryPlace(x,y); x+=modW; }
 
-      if(allIn){
-        const worldCorners = corners.map(([cx,cy])=>{
-          const [rx,ry]=rotate2D(cx,cy,rotBack);
-          return fromMetric(rx,ry,refLat,refLng);
-        });
-        placed.push(worldCorners);
-        if(!firstModCorners) firstModCorners = worldCorners;
+      // Right face: fill from right edge inward toward ridge (reversed)
+      const rightMin = ridgeAlignedX + ridgeClearHalf;
+      x = maxX - modW;
+      while(x >= rightMin-1e-9){ tryPlace(x,y); x-=modW; }
+    } else {
+      // ── NORMAL MODE ──
+      let colIdx=0, x=minX;
+      while(x+modW <= maxX+1e-9){
+        tryPlace(x,y);
+        const isVGap=(pathwayDir==='vertical'||pathwayDir==='both')&&colIdx>0&&colIdx%pathwayEvery===0;
+        const vGap=(isVGap&&x+modW+pathwayW+modW<=maxX+1e-9)?pathwayW:0;
+        if(vGap>0&&rowIdx===0) vBands.push({x1:x+modW,y1:minY,x2:x+modW+vGap,y2:maxY});
+        x+=modW+vGap; colIdx++;
       }
-
-      // Vertical pathway: only insert gap if at least one more column fits after it
-      const isVGap = (pathwayDir==='vertical'||pathwayDir==='both') && colIdx>0 && colIdx%pathwayEvery===0;
-      const vGap   = (isVGap && x+modW+pathwayW+modW <= maxX+1e-9) ? pathwayW : 0;
-      if(vGap > 0 && rowIdx===0){
-        vBands.push({ x1:x+modW, y1:minY, x2:x+modW+vGap, y2:maxY });
-      }
-      x += modW + vGap; colIdx++;
     }
 
-    // Horizontal pathway: only insert gap if at least one more row fits after it
-    const isHGap = (pathwayDir==='horizontal'||pathwayDir==='both') && rowIdx>0 && rowIdx%pathwayEvery===0;
-    const hGap   = (isHGap && y+modH+pathwayW+modH <= maxY+1e-9) ? pathwayW : 0;
-    if(hGap > 0){
-      hBands.push({ x1:minX, y1:y+modH, x2:maxX, y2:y+modH+hGap });
-    }
-    y += modH + hGap; rowIdx++;
+    // Horizontal pathway (both modes)
+    const isHGap=(pathwayDir==='horizontal'||pathwayDir==='both')&&rowIdx>0&&rowIdx%pathwayEvery===0;
+    const hGap=(isHGap&&y+modH+pathwayW+modH<=maxY+1e-9)?pathwayW:0;
+    if(hGap>0) hBands.push({x1:minX,y1:y+modH,x2:maxX,y2:y+modH+hGap});
+    y+=modH+hGap; rowIdx++;
   }
 
   // Save params so manual-add knows current rotation/dims/refpoint
@@ -728,9 +832,10 @@ function clearAll(){
   edgeLabels.forEach(l=>l.setMap(null)); edgeLabels=[];
   currentPolygon?.setMap(null); currentPolygon=null;
   axisOverlay?.setMap(null);    axisOverlay=null;
-  ['btn-run','btn-autodetect','btn-auto','btn-edit'].forEach(id=>document.getElementById(id).disabled=true);
+  ['btn-run','btn-autodetect','btn-auto','btn-edit','btn-ridge'].forEach(id=>document.getElementById(id).disabled=true);
   drawingManager?.setDrawingMode(null);
   lastLayoutParams=null;
+  clearRidge();
   setStatus('已清除。點擊「繪製安裝範圍」重新開始。');
 }
 
@@ -837,7 +942,10 @@ function toggleAddMode(){
     map.setOptions({draggableCursor:null});
   }
 }
-function onMapClick(e){ if(!editMode||!addModMode||!lastLayoutParams) return; addModuleAt(e.latLng); }
+function onMapClick(e){
+  if(ridgeDrawMode){ onRidgeClick(e.latLng); return; }
+  if(editMode && addModMode && lastLayoutParams){ addModuleAt(e.latLng); }
+}
 function addModuleAt(latLng){
   const {modH,modW,angleDeg,refLat,refLng}=lastLayoutParams;
   const [lx,ly]=toMetric(latLng.lat(),latLng.lng(),refLat,refLng);
