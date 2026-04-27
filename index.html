@@ -112,8 +112,8 @@
             <span id="ridge-hint" style="font-size:10px;color:#64748b">點兩點標記屋脊</span>
           </div>
           <div class="field-row">
-            <label>屋脊淨距 (m)</label>
-            <input type="number" id="ridge-clearance" value="0.3" min="0" max="5" step="0.1" style="width:60px" title="屋脊兩側各留多少不排模組">
+            <label>每側淨距 (m)</label>
+            <input type="number" id="ridge-clearance" value="0.15" min="0" max="5" step="0.05" style="width:60px" title="屋脊每一側留多少不排模組（各15cm）">
           </div>
           <button class="tool-btn danger" onclick="clearRidge()" style="font-size:11px;padding:5px">✕ 清除屋脊線</button>
         </div>
@@ -486,6 +486,33 @@ function onPolygonComplete(polygon){
 // ═══════════════════════════════════════════
 // RIDGE LINE
 // ═══════════════════════════════════════════
+// Extend a line (p1→p2) in both directions until it hits the polygon boundary.
+// Returns [{lat,lng},{lat,lng}] clipped to the polygon edges.
+function extendRidgeToPolygon(p1, p2, polygon){
+  const dlat = p2.lat - p1.lat;
+  const dlng = p2.lng - p1.lng;
+  const polyPath = polygon.getPath().getArray();
+  const n = polyPath.length;
+  let tMin = Infinity, tMax = -Infinity;
+
+  for(let i=0; i<n; i++){
+    const a = polyPath[i], b = polyPath[(i+1)%n];
+    const ex = b.lng()-a.lng(), ey = b.lat()-a.lat();
+    const denom = dlng*ey - dlat*ex;
+    if(Math.abs(denom) < 1e-15) continue;
+    const t = ((a.lng()-p1.lng)*ey - (a.lat()-p1.lat)*ex) / denom;
+    const s = ((a.lng()-p1.lng)*dlat - (a.lat()-p1.lat)*dlng) / denom;
+    if(s >= -1e-9 && s <= 1+1e-9){
+      if(t < tMin) tMin = t;
+      if(t > tMax) tMax = t;
+    }
+  }
+  if(tMin === Infinity) return [p1, p2]; // fallback
+  return [
+    {lat: p1.lat + tMin*dlat, lng: p1.lng + tMin*dlng},
+    {lat: p1.lat + tMax*dlat, lng: p1.lng + tMax*dlng},
+  ];
+}
 function toggleRidgeDraw(){
   ridgeDrawMode = !ridgeDrawMode;
   ridgeClickStep = 0;
@@ -520,7 +547,13 @@ function onRidgeClick(latLng){
       ridgePolyline.setMap(map);
     }
   } else {
-    ridgePts[1] = {lat:latLng.lat(), lng:latLng.lng()};
+    const rawP2 = {lat:latLng.lat(), lng:latLng.lng()};
+    // Auto-extend ridge to polygon boundary
+    const extended = currentPolygon
+      ? extendRidgeToPolygon(ridgePts[0], rawP2, currentPolygon)
+      : [ridgePts[0], rawP2];
+    ridgePts = extended;
+
     // Draw final dashed ridge polyline
     if(ridgePolyline) ridgePolyline.setMap(null);
     ridgePolyline = new google.maps.Polyline({
@@ -671,7 +704,7 @@ function runLayout(){
   // Ridge line in aligned frame
   let ridgeAlignedX = null, ridgeClearHalf = 0;
   if(ridgePts && ridgePts[0] && ridgePts[1]){
-    ridgeClearHalf = (parseFloat(document.getElementById('ridge-clearance').value)||0.3) / 2;
+    ridgeClearHalf = parseFloat(document.getElementById('ridge-clearance').value)||0.15;
     const rps = ridgePts.map(p=>{
       const [mx,my]=toMetric(p.lat,p.lng,refLat,refLng);
       return rotate2D(mx,my,rotInv);
